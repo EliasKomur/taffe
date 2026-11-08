@@ -1,0 +1,44 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer XcodeGen
+        run: brew install xcodegen
+
+      - name: Générer le projet Xcode
+        run: xcodegen generate
+
+      - name: Compiler l'app (sans signature)
+        run: |
+          xcodebuild \
+            -project Taffe.xcodeproj \
+            -target Taffe \
+            -configuration Release \
+            -sdk iphoneos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Créer le fichier IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Release-iphoneos/Taffe.app Payload/
+          zip -qr Taffe.ipa Payload
+
+      - name: Publier l'IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Taffe-ipa
+          path: Taffe.ipa
