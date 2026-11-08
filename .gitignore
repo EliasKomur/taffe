@@ -3,4 +3,6 @@ Payload/
 *.ipa
 Taffe.xcodeproj/
 Info.plist
+WidgetInfo.plist
+*.entitlements
 .DS_Store

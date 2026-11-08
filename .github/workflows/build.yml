@@ -18,7 +18,7 @@ jobs:
       - name: Générer le projet Xcode
         run: xcodegen generate
 
-      - name: Compiler l'app (sans signature)
+      - name: Compiler l'app + le widget (sans signature)
         run: |
           xcodebuild \
             -project Taffe.xcodeproj \
@@ -30,6 +30,14 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
+
+      - name: Signature ad hoc avec le groupe partagé (pour le widget)
+        run: |
+          APP=build/Release-iphoneos/Taffe.app
+          ls -la "$APP/PlugIns"
+          codesign -f -s - --entitlements TaffeWidget.entitlements "$APP/PlugIns/TaffeWidget.appex"
+          codesign -f -s - --entitlements Taffe.entitlements "$APP"
+          codesign -d --entitlements - "$APP"
 
       - name: Créer le fichier IPA
         run: |

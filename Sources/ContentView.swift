@@ -1,214 +1,31 @@
 import SwiftUI
 
-struct ContentView: View {
+// MARK: - Racine
+
+struct RootView: View {
     @EnvironmentObject private var detector: SoundDetector
-    @State private var showClearConfirm = false
+    @Environment(\.theme) private var theme
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        NavigationStack {
-            List {
-                counterSection
-                scoreSection
-                liveSection
-                settingsSection
-                historySection
-            }
-            .navigationTitle("Taffe")
-            .alert("Oups", isPresented: errorBinding) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(detector.errorMessage ?? "")
-            }
-            .confirmationDialog("Effacer tout l'historique ?",
-                                isPresented: $showClearConfirm,
-                                titleVisibility: .visible) {
-                Button("Tout effacer", role: .destructive) { detector.clearAll() }
-                Button("Annuler", role: .cancel) {}
+        TabView {
+            LiveView()
+                .tabItem { Label("LIVE", systemImage: "waveform") }
+            StatsView()
+                .tabItem { Label("STATS", systemImage: "chart.bar.xaxis") }
+            SystemView()
+                .tabItem { Label("SYSTÈME", systemImage: "cpu") }
+        }
+        .tint(theme.primary)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                detector.appBecameActive()
             }
         }
-    }
-
-    // MARK: - Compteur
-
-    private var counterSection: some View {
-        Section {
-            VStack(spacing: 12) {
-                Text("\(detector.todayCount)")
-                    .font(.system(size: 80, weight: .bold, design: .rounded))
-                    .contentTransition(.numericText())
-                    .animation(.snappy, value: detector.todayCount)
-
-                Text("taffes aujourd'hui")
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    detector.isListening ? detector.stop() : detector.start()
-                } label: {
-                    Label(detector.isListening ? "Arrêter l'écoute" : "Lancer l'écoute",
-                          systemImage: detector.isListening ? "stop.fill" : "ear")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(detector.isListening ? .red : .green)
-                .controlSize(.large)
-
-                HStack {
-                    Button {
-                        detector.addPuff()
-                    } label: {
-                        Label("+1", systemImage: "plus")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        detector.removeLastPuff()
-                    } label: {
-                        Label("Annuler", systemImage: "arrow.uturn.backward")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(detector.puffs.isEmpty)
-                }
-
-                if let last = detector.lastDetection {
-                    Text("Dernière taffe détectée : \(last.formatted(date: .omitted, time: .standard))")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-        }
-    }
-
-    // MARK: - Score taffe
-
-    private var scoreSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Score taffe")
-                        .font(.headline)
-                    Spacer()
-                    Text("\(Int(detector.currentScore * 100)) %")
-                        .font(.headline)
-                        .monospacedDigit()
-                        .foregroundStyle(detector.isAboveThreshold ? .green : .primary)
-                }
-
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.secondary.opacity(0.2))
-                        Capsule()
-                            .fill(detector.isAboveThreshold ? Color.green : Color.blue)
-                            .frame(width: geo.size.width * detector.currentScore)
-                            .animation(.easeOut(duration: 0.15), value: detector.currentScore)
-                        Rectangle()
-                            .fill(Color.orange)
-                            .frame(width: 3)
-                            .offset(x: geo.size.width * detector.threshold - 1.5)
-                    }
-                }
-                .frame(height: 14)
-
-                Text("Trait orange = seuil (\(Int(detector.threshold * 100)) %)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 4)
-        } footer: {
-            if detector.triggerLabels.isEmpty {
-                Text("Coche au moins un son ci-dessous pour activer le comptage.")
-            } else {
-                Text("Regarde le score au repos, puis pendant une taffe, et place le seuil entre les deux.")
-            }
-        }
-    }
-
-    // MARK: - En direct
-
-    private var liveSection: some View {
-        Section {
-            if !detector.isListening {
-                Text("Lance l'écoute pour voir ce que l'iPhone entend.")
-                    .foregroundStyle(.secondary)
-            } else if detector.topLabels.isEmpty {
-                Text("Écoute en cours…")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(detector.topLabels) { label in
-                    Button {
-                        detector.toggleTrigger(label.id)
-                    } label: {
-                        HStack {
-                            Image(systemName: detector.isTrigger(label.id) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(detector.isTrigger(label.id) ? .green : .secondary)
-                            Text(label.id)
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            ProgressView(value: label.confidence)
-                                .frame(width: 80)
-                            Text("\(Int(label.confidence * 100)) %")
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 48, alignment: .trailing)
-                        }
-                    }
-                }
-            }
-        } header: {
-            Text("En direct")
-        } footer: {
-            Text("Touche un son pour le cocher ou le décocher. Tous les sons cochés s'additionnent dans le score taffe.")
-        }
-    }
-
-    // MARK: - Réglages
-
-    private var settingsSection: some View {
-        Section("Détection") {
-            NavigationLink {
-                LabelPickerView()
-            } label: {
-                LabeledContent("Déclencheurs", value: triggerSummary)
-            }
-
-            VStack(alignment: .leading) {
-                Text("Seuil : \(Int(detector.threshold * 100)) %")
-                Slider(value: $detector.threshold, in: 0.05...0.95, step: 0.01)
-            }
-
-            Stepper(value: $detector.cooldown, in: 1...10, step: 1) {
-                Text("Pause entre 2 taffes : \(Int(detector.cooldown)) s")
-            }
-        }
-    }
-
-    private var triggerSummary: String {
-        switch detector.triggerLabels.count {
-        case 0: return "Aucun"
-        case 1: return detector.triggerLabels.first ?? ""
-        default: return "\(detector.triggerLabels.count) sons"
-        }
-    }
-
-    // MARK: - Historique
-
-    private var historySection: some View {
-        Section("Historique") {
-            if detector.puffs.isEmpty {
-                Text("Aucune taffe enregistrée.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(detector.puffs.suffix(50).reversed()), id: \.self) { date in
-                    Text(date.formatted(date: .abbreviated, time: .standard))
-                }
-                Button("Effacer tout l'historique", role: .destructive) {
-                    showClearConfirm = true
-                }
-            }
+        .alert("ERREUR SYSTÈME", isPresented: errorBinding) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(detector.errorMessage ?? "")
         }
     }
 
@@ -220,54 +37,277 @@ struct ContentView: View {
     }
 }
 
-struct LabelPickerView: View {
-    @EnvironmentObject private var detector: SoundDetector
-    @State private var search = ""
+// MARK: - Onglet LIVE
 
-    private var selected: [String] {
-        detector.knownLabels.filter { detector.isTrigger($0) }
-    }
-
-    private var filtered: [String] {
-        search.isEmpty
-            ? detector.knownLabels
-            : detector.knownLabels.filter { $0.localizedCaseInsensitiveContains(search) }
-    }
+struct LiveView: View {
+    @Environment(\.theme) private var theme
 
     var body: some View {
-        List {
-            if !selected.isEmpty && search.isEmpty {
-                Section("Cochés") {
-                    ForEach(selected, id: \.self) { label in
-                        row(label)
-                    }
-                }
+        ScrollView {
+            VStack(spacing: 14) {
+                CyberHeader(title: "TAFFE_", subtitle: theme.name)
+                StatusStrip()
+                CounterPanel()
+                ScorePanel()
+                LivePanel()
             }
+            .padding(16)
+        }
+        .modifier(CyberScreen())
+    }
+}
 
-            Section(search.isEmpty ? "Tous les sons" : "Résultats") {
-                ForEach(filtered, id: \.self) { label in
-                    row(label)
-                }
+struct StatusStrip: View {
+    @EnvironmentObject private var detector: SoundDetector
+    @Environment(\.theme) private var theme
+    @State private var blink = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(color)
+                .frame(width: 10, height: 10)
+                .shadow(color: color, radius: 6)
+                .opacity(blink ? 0.3 : 1)
+                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: blink)
+            Text(text)
+                .font(.mono(13, .bold))
+                .foregroundStyle(color)
+                .tracking(1.5)
+            Spacer()
+            if detector.restartCount > 0 {
+                Text("RELANCES \(detector.restartCount)")
+                    .font(.mono(10))
+                    .foregroundStyle(theme.dim)
             }
         }
-        .searchable(text: $search, prompt: "snoring, breathing…")
-        .navigationTitle("Déclencheurs")
-        .navigationBarTitleDisplayMode(.inline)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(CutCornerShape(cut: 8).fill(theme.surface))
+        .overlay(CutCornerShape(cut: 8).stroke(color.opacity(0.5), lineWidth: 1))
+        .onAppear { blink = true }
     }
 
-    private func row(_ label: String) -> some View {
-        Button {
-            detector.toggleTrigger(label)
-        } label: {
+    private var color: Color {
+        switch detector.listenState {
+        case .active: return theme.primary
+        case .reconnecting: return theme.alert
+        case .quiet: return theme.secondary
+        case .off: return theme.dim
+        }
+    }
+
+    private var text: String {
+        switch detector.listenState {
+        case .active: return "ÉCOUTE ACTIVE"
+        case .reconnecting: return "RECONNEXION…"
+        case .quiet: return "PAUSE NUIT"
+        case .off: return "HORS LIGNE"
+        }
+    }
+}
+
+struct CounterPanel: View {
+    @EnvironmentObject private var detector: SoundDetector
+    @Environment(\.theme) private var theme
+    @State private var glitch = false
+
+    var body: some View {
+        CyberPanel("Compteur") {
+            VStack(spacing: 14) {
+                counter
+                Text("TAFFES AUJOURD'HUI")
+                    .font(.mono(12, .semibold))
+                    .foregroundStyle(theme.dim)
+                    .tracking(2)
+                if detector.dailyLimit > 0 {
+                    limitBar
+                }
+                infoRow
+                listenButton
+                HStack(spacing: 10) {
+                    Button {
+                        detector.addPuff()
+                    } label: {
+                        Label("+1", systemImage: "plus")
+                    }
+                    .buttonStyle(CyberButtonStyle(color: theme.secondary))
+
+                    Button {
+                        detector.removeLastPuff()
+                    } label: {
+                        Label("ANNULER", systemImage: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(CyberButtonStyle(color: theme.dim))
+                    .disabled(detector.puffs.isEmpty)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .onChange(of: detector.todayCount) { oldValue, newValue in
+            guard newValue > oldValue else { return }
+            glitch = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                glitch = false
+            }
+        }
+    }
+
+    private var counter: some View {
+        let value = "\(detector.todayCount)"
+        return ZStack {
+            Text(value)
+                .foregroundStyle(theme.secondary)
+                .offset(x: glitch ? -5 : 0, y: glitch ? 2 : 0)
+                .opacity(glitch ? 0.9 : 0)
+            Text(value)
+                .foregroundStyle(theme.alert)
+                .offset(x: glitch ? 5 : 0, y: glitch ? -2 : 0)
+                .opacity(glitch ? 0.9 : 0)
+            Text(value)
+                .foregroundStyle(theme.text)
+                .shadow(color: theme.primary.opacity(0.9), radius: 14)
+        }
+        .font(.system(size: 96, weight: .black, design: .monospaced))
+        .contentTransition(.numericText())
+        .animation(.snappy(duration: 0.2), value: detector.todayCount)
+    }
+
+    private var limitBar: some View {
+        let limit = detector.dailyLimit
+        let today = detector.todayCount
+        let ratio = Double(today) / Double(max(limit, 1))
+        let color = today >= limit ? theme.alert : theme.primary
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(label)
-                    .foregroundStyle(.primary)
+                Text("LIMITE")
+                    .font(.mono(11, .bold))
+                    .foregroundStyle(theme.dim)
                 Spacer()
-                if detector.isTrigger(label) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                Text("\(today)/\(limit)")
+                    .font(.mono(11, .bold))
+                    .foregroundStyle(color)
+            }
+            NeonBar(value: ratio, color: color)
+        }
+    }
+
+    private var infoRow: some View {
+        HStack {
+            Text("HIER \(detector.yesterdayCount)")
+            Spacer()
+            if let last = detector.lastDetection ?? detector.puffs.last {
+                Text("DERNIÈRE \(last.formatted(date: .omitted, time: .shortened))")
+            }
+        }
+        .font(.mono(11, .bold))
+        .foregroundStyle(theme.dim)
+    }
+
+    private var listenButton: some View {
+        Button {
+            if detector.wantsListening {
+                detector.stop()
+            } else {
+                detector.start()
+            }
+        } label: {
+            Label(detector.wantsListening ? "ARRÊTER L'ÉCOUTE" : "LANCER L'ÉCOUTE",
+                  systemImage: detector.wantsListening ? "stop.fill" : "waveform")
+        }
+        .buttonStyle(CyberButtonStyle(color: detector.wantsListening ? theme.alert : theme.primary,
+                                      filled: true,
+                                      textColor: theme.background))
+    }
+}
+
+struct ScorePanel: View {
+    @EnvironmentObject private var detector: SoundDetector
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        let active = detector.isAboveThreshold
+        CyberPanel("Score taffe", accent: active ? theme.secondary : nil) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("\(Int(detector.currentScore * 100)) %")
+                        .font(.mono(28, .heavy))
+                        .foregroundStyle(active ? theme.secondary : theme.text)
+                    Spacer()
+                    Text("SEUIL \(Int(detector.threshold * 100)) %")
+                        .font(.mono(12, .bold))
+                        .foregroundStyle(theme.alert)
+                }
+                NeonBar(value: detector.currentScore,
+                        color: active ? theme.secondary : theme.primary,
+                        marker: detector.threshold,
+                        markerColor: theme.alert,
+                        height: 12)
+                    .animation(.easeOut(duration: 0.15), value: detector.currentScore)
+                if detector.triggerLabels.isEmpty {
+                    Text("Aucun son coché : touche un son dans EN DIRECT.")
+                        .font(.mono(11))
+                        .foregroundStyle(theme.alert)
                 }
             }
         }
+    }
+}
+
+struct LivePanel: View {
+    @EnvironmentObject private var detector: SoundDetector
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        CyberPanel("En direct") {
+            VStack(alignment: .leading, spacing: 8) {
+                if detector.topLabels.isEmpty {
+                    Text(detector.wantsListening ? "Analyse en cours…" : "Lance l'écoute pour voir ce que le micro entend.")
+                        .font(.mono(12))
+                        .foregroundStyle(theme.dim)
+                } else {
+                    ForEach(detector.topLabels) { label in
+                        LabelRow(label: label)
+                    }
+                }
+                Text("Touche un son pour le cocher. Les sons cochés s'additionnent dans le score.")
+                    .font(.mono(10))
+                    .foregroundStyle(theme.dim)
+                    .padding(.top, 4)
+            }
+        }
+    }
+}
+
+struct LabelRow: View {
+    @EnvironmentObject private var detector: SoundDetector
+    @Environment(\.theme) private var theme
+    let label: LabelScore
+
+    var body: some View {
+        let selected = detector.isTrigger(label.id)
+        Button {
+            detector.toggleTrigger(label.id)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: selected ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(selected ? theme.primary : theme.dim)
+                Text(label.id)
+                    .font(.mono(13, selected ? .bold : .regular))
+                    .foregroundStyle(selected ? theme.text : theme.dim)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                NeonBar(value: label.confidence,
+                        color: selected ? theme.primary : theme.dim,
+                        height: 6)
+                    .frame(width: 70)
+                Text("\(Int(label.confidence * 100))%")
+                    .font(.mono(12))
+                    .foregroundStyle(theme.dim)
+                    .frame(width: 40, alignment: .trailing)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
