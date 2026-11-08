@@ -36,6 +36,12 @@ private final class FrameCounter {
     var position: AVAudioFramePosition = 0
 }
 
+/// Indique si le classifieur d'Apple doit recevoir le son (seulement app ouverte).
+/// Utilisé uniquement sur la file d'analyse.
+private final class FeedGate {
+    var classifierEnabled = true
+}
+
 /// Reçoit les résultats d'une session d'analyse. Les résultats d'une ancienne
 /// session (après un redémarrage) sont ignorés grâce au numéro de génération.
 private final class AnalysisObserver: NSObject, SNResultsObserving {
@@ -81,12 +87,18 @@ final class SoundDetector: NSObject, ObservableObject {
 
     @Published private(set) var wantsListening = false
     @Published private(set) var engineRunning = false
+    @Published private(set) var isInBackground = false
     @Published private(set) var topLabels: [LabelScore] = []
     @Published private(set) var puffs: [Date] = []
     @Published private(set) var lastDetection: Date?
     @Published private(set) var currentScore: Double = 0
     @Published private(set) var log: [LogEntry] = []
     @Published private(set) var restartCount = 0
+    @Published private(set) var fallbackLearned = 0
+    @Published private(set) var fallbackSimilarity: Double = 0
+    @Published private(set) var fallbackLevel: Double = 0
+    @Published private(set) var clipTaffes = 0
+    @Published private(set) var clipFond = 0
     @Published var errorMessage: String?
 
     @Published private(set) var triggerLabels: Set<String> {
@@ -129,6 +141,26 @@ final class SoundDetector: NSObject, ObservableObject {
         }
     }
 
+    /// Ressemblance minimale avec l'empreinte de ta vape (détecteur d'arrière-plan).
+    @Published var fallbackThreshold: Double {
+        didSet {
+            UserDefaults.standard.set(fallbackThreshold, forKey: Keys.fallbackThreshold)
+            let value = fallbackThreshold
+            let fallback = self.fallback
+            analysisQueue.async { fallback.similarityThreshold = value }
+        }
+    }
+
+    /// Volume minimal au-dessus du bruit ambiant, en dB (détecteur d'arrière-plan).
+    @Published var fallbackMargin: Double {
+        didSet {
+            UserDefaults.standard.set(fallbackMargin, forKey: Keys.fallbackMargin)
+            let value = fallbackMargin
+            let fallback = self.fallback
+            analysisQueue.async { fallback.marginDB = value }
+        }
+    }
+
     private(set) var knownLabels: [String] = []
 
     // MARK: - Valeurs calculées
@@ -144,6 +176,10 @@ final class SoundDetector: NSObject, ObservableObject {
 
     var isAboveThreshold: Bool {
         !triggerLabels.isEmpty && currentScore >= threshold
+    }
+
+    var fallbackReady: Bool {
+        fallbackLearned >= FallbackDetector.requiredFrames
     }
 
     var isQuietNow: Bool {
@@ -175,6 +211,9 @@ final class SoundDetector: NSObject, ObservableObject {
     private var analyzer: SNAudioStreamAnalyzer?
     private var observer: AnalysisObserver?
     private let analysisQueue = DispatchQueue(label: "com.eliaskomur.taffe.analysis")
+    private let fallback = FallbackDetector()
+    private let clips = ClipCollector()
+    private let gate = FeedGate()
     private var generation = 0
     private var lastResultDate = Date.distantPast
     private var lastDetectionDate = Date.distantPast
@@ -197,6 +236,8 @@ final class SoundDetector: NSObject, ObservableObject {
         static let lastLimitAlert = "lastLimitAlertDay"
         static let wantsListening = "wantsListening"
         static let log = "eventLog"
+        static let fallbackThreshold = "fallbackThreshold"
+        static let fallbackMargin = "fallbackMargin"
     }
 
     // MARK: - Init
@@ -221,6 +262,12 @@ final class SoundDetector: NSObject, ObservableObject {
         _quietEnd = Published(initialValue: defaults.object(forKey: Keys.quietEnd) as? Int ?? 7)
         _dailyLimit = Published(initialValue: PuffStore.dailyLimit)
         _limitAlert = Published(initialValue: defaults.bool(forKey: Keys.limitAlert))
+
+        let savedFallbackThreshold = defaults.double(forKey: Keys.fallbackThreshold)
+        _fallbackThreshold = Published(initialValue: savedFallbackThreshold > 0 ? savedFallbackThreshold : 0.85)
+        let savedFallbackMargin = defaults.double(forKey: Keys.fallbackMargin)
+        _fallbackMargin = Published(initialValue: savedFallbackMargin > 0 ? savedFallbackMargin : 8)
+
         _puffs = Published(initialValue: PuffStore.load())
         _log = Published(initialValue: SoundDetector.loadLog())
 
@@ -229,6 +276,29 @@ final class SoundDetector: NSObject, ObservableObject {
         if let request = try? SNClassifySoundRequest(classifierIdentifier: .version1) {
             knownLabels = request.knownClassifications.sorted()
         }
+
+        // Détecteur d'arrière-plan
+        fallback.similarityThreshold = fallbackThreshold
+        fallback.marginDB = fallbackMargin
+        fallback.onPuff = { [weak self] in
+            DispatchQueue.main.async {
+                self?.registerBackgroundDetection()
+            }
+        }
+        fallback.onStatus = { [weak self] similarity, level in
+            DispatchQueue.main.async {
+                guard let self, !self.isInBackground else { return }
+                self.fallbackSimilarity = similarity
+                self.fallbackLevel = level
+            }
+        }
+        fallback.onLearned = { [weak self] frames in
+            DispatchQueue.main.async {
+                self?.fallbackLearned = frames
+            }
+        }
+        fallbackLearned = fallback.learnedFrames
+        refreshClipCounts()
 
         let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
@@ -242,6 +312,10 @@ final class SoundDetector: NSObject, ObservableObject {
                            name: .AVAudioEngineConfigurationChange, object: engine)
         center.addObserver(self, selector: #selector(handlePuffsChanged(_:)),
                            name: TaffeShared.puffsChanged, object: nil)
+        center.addObserver(self, selector: #selector(appDidEnterBackground(_:)),
+                           name: UIApplication.didEnterBackgroundNotification, object: nil)
+        center.addObserver(self, selector: #selector(appWillEnterForeground(_:)),
+                           name: UIApplication.willEnterForegroundNotification, object: nil)
 
         // Reprise automatique si l'écoute était active à la dernière fermeture.
         if defaults.bool(forKey: Keys.wantsListening) {
@@ -314,6 +388,7 @@ final class SoundDetector: NSObject, ObservableObject {
     /// Appelé quand l'app revient au premier plan.
     func appBecameActive() {
         reloadPuffs()
+        refreshClipCounts()
         if wantsListening && !engine.isRunning && !pendingRestart {
             scheduleRestart(reason: "retour dans l'app", delay: 0.2)
         }
@@ -358,11 +433,27 @@ final class SoundDetector: NSObject, ObservableObject {
 
             let queue = analysisQueue
             let counter = FrameCounter()
+            let fallback = self.fallback
+            let clips = self.clips
+            let gate = self.gate
+            let sampleRate = format.sampleRate
+            let background = isInBackground
+            queue.async {
+                fallback.configure(sampleRate: sampleRate)
+                clips.configure(sampleRate: sampleRate)
+                gate.classifierEnabled = !background
+                fallback.countingEnabled = background
+            }
+
             input.removeTap(onBus: 0)
             input.installTap(onBus: 0, bufferSize: 8192, format: format) { buffer, _ in
                 queue.async {
-                    newAnalyzer.analyze(buffer, atAudioFramePosition: counter.position)
-                    counter.position += AVAudioFramePosition(buffer.frameLength)
+                    if gate.classifierEnabled {
+                        newAnalyzer.analyze(buffer, atAudioFramePosition: counter.position)
+                        counter.position += AVAudioFramePosition(buffer.frameLength)
+                    }
+                    fallback.process(buffer)
+                    clips.append(buffer)
                 }
             }
 
@@ -424,6 +515,38 @@ final class SoundDetector: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Premier plan / arrière-plan
+
+    @objc private func appDidEnterBackground(_ notification: Notification) {
+        isInBackground = true
+        applyBackgroundMode(true)
+        guard wantsListening else { return }
+        if fallbackReady {
+            addLog("Arrière-plan : détecteur maison actif")
+        } else {
+            addLog("Arrière-plan : détecteur maison pas encore entraîné (\(fallbackLearned)/\(FallbackDetector.requiredFrames))")
+        }
+    }
+
+    @objc private func appWillEnterForeground(_ notification: Notification) {
+        isInBackground = false
+        applyBackgroundMode(false)
+    }
+
+    private func applyBackgroundMode(_ background: Bool) {
+        let fallback = self.fallback
+        let gate = self.gate
+        analysisQueue.async {
+            gate.classifierEnabled = !background
+            fallback.countingEnabled = background
+        }
+        lastResultDate = Date()
+        if background {
+            topLabels = []
+            currentScore = 0
+        }
+    }
+
     // MARK: - Surveillance
 
     private func startWatchdog() {
@@ -451,7 +574,7 @@ final class SoundDetector: NSObject, ObservableObject {
         }
         if !engine.isRunning {
             scheduleRestart(reason: "moteur audio arrêté")
-        } else if Date().timeIntervalSince(lastResultDate) > 20 {
+        } else if !isInBackground && Date().timeIntervalSince(lastResultDate) > 20 {
             scheduleRestart(reason: "plus aucun résultat")
         }
     }
@@ -511,10 +634,10 @@ final class SoundDetector: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Résultats
+    // MARK: - Résultats du classifieur d'Apple (app ouverte)
 
     func handle(top: [LabelScore], scores: [String: Double], generation: Int) {
-        guard generation == self.generation else { return }
+        guard generation == self.generation, !isInBackground else { return }
         lastResultDate = Date()
         consecutiveFailures = 0
         topLabels = top
@@ -526,19 +649,26 @@ final class SoundDetector: NSObject, ObservableObject {
         currentScore = min(total, 1)
 
         if isAboveThreshold && !isQuietNow {
-            registerDetection()
+            let fallback = self.fallback
+            analysisQueue.async {
+                fallback.learnFromRecent()
+            }
+            registerDetection(fromBackground: false)
         }
     }
 
     func handleFailure(message: String, generation: Int) {
         guard generation == self.generation else { return }
+        // En arrière-plan, iOS bloque le classifieur d'Apple : c'est normal,
+        // le détecteur maison prend le relais.
+        guard !isInBackground else { return }
         addLog("Erreur d'analyse : \(message)")
         scheduleRestart(reason: "erreur d'analyse")
     }
 
     // MARK: - Taffes
 
-    private func registerDetection() {
+    private func registerDetection(fromBackground: Bool) {
         let now = Date()
         // Une taffe = un bloc de son continu : on ne compte que si le son
         // s'était arrêté depuis au moins `cooldown` secondes.
@@ -547,11 +677,32 @@ final class SoundDetector: NSObject, ObservableObject {
             lastDetection = now
             reloadWidgets()
             checkDailyLimit()
-            if UIApplication.shared.applicationState == .active {
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
+            let clips = self.clips
+            analysisQueue.async {
+                clips.lastPuffDate = now
+            }
+
+            if fromBackground {
+                addLog("Taffe détectée en arrière-plan")
+            } else {
+                analysisQueue.asyncAfter(deadline: .now() + 1.2) {
+                    clips.saveClip(kind: "taffe")
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+                    self?.refreshClipCounts()
+                }
+                if UIApplication.shared.applicationState == .active {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                }
             }
         }
         lastDetectionDate = now
+    }
+
+    private func registerBackgroundDetection() {
+        guard isInBackground, wantsListening, !isQuietNow else { return }
+        registerDetection(fromBackground: true)
     }
 
     func addPuff() {
@@ -585,6 +736,33 @@ final class SoundDetector: NSObject, ObservableObject {
 
     func reloadWidgets() {
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: - Détecteur d'arrière-plan
+
+    func resetFallbackLearning() {
+        let fallback = self.fallback
+        analysisQueue.async {
+            fallback.resetLearning()
+        }
+        addLog("Apprentissage d'arrière-plan réinitialisé")
+    }
+
+    // MARK: - Échantillons
+
+    func refreshClipCounts() {
+        clipTaffes = ClipCollector.count("taffe")
+        clipFond = ClipCollector.count("fond")
+    }
+
+    func clipFiles() -> [URL] {
+        ClipCollector.files("taffe") + ClipCollector.files("fond")
+    }
+
+    func deleteClips() {
+        ClipCollector.deleteAll()
+        refreshClipCounts()
+        addLog("Échantillons supprimés")
     }
 
     // MARK: - Notifications

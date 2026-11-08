@@ -6,8 +6,8 @@ options:
     iOS: "17.0"
 settings:
   base:
-    MARKETING_VERSION: "3.0"
-    CURRENT_PROJECT_VERSION: "3"
+    MARKETING_VERSION: "3.1"
+    CURRENT_PROJECT_VERSION: "4"
     TARGETED_DEVICE_FAMILY: "1"
     SWIFT_VERSION: "5.0"
     CODE_SIGNING_ALLOWED: "NO"
@@ -30,6 +30,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Taffe
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSMicrophoneUsageDescription: "Taffe écoute le micro pour détecter automatiquement tes taffes."
         UIBackgroundModes:
           - audio
@@ -58,6 +60,8 @@ targets:
       path: WidgetInfo.plist
       properties:
         CFBundleDisplayName: Taffe
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
         ALTAppGroups:

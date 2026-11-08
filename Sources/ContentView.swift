@@ -49,6 +49,7 @@ struct LiveView: View {
                 StatusStrip()
                 CounterPanel()
                 ScorePanel()
+                BackgroundPanel()
                 LivePanel()
             }
             .padding(16)
@@ -248,6 +249,50 @@ struct ScorePanel: View {
                     Text("Aucun son coché : touche un son dans EN DIRECT.")
                         .font(.mono(11))
                         .foregroundStyle(theme.alert)
+                }
+            }
+        }
+    }
+}
+
+struct BackgroundPanel: View {
+    @EnvironmentObject private var detector: SoundDetector
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        let required = FallbackDetector.requiredFrames
+        let learned = min(detector.fallbackLearned, required)
+        let ready = detector.fallbackReady
+        CyberPanel("Mode écran verrouillé", accent: ready ? theme.secondary : theme.alert) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(ready ? "PRÊT" : "APPRENTISSAGE")
+                        .font(.mono(16, .heavy))
+                        .foregroundStyle(ready ? theme.secondary : theme.alert)
+                    Spacer()
+                    Text("\(learned)/\(required)")
+                        .font(.mono(12, .bold))
+                        .foregroundStyle(theme.dim)
+                }
+                NeonBar(value: Double(learned) / Double(required),
+                        color: ready ? theme.secondary : theme.alert)
+
+                if ready {
+                    HStack {
+                        Text("RESSEMBLANCE \(Int(detector.fallbackSimilarity * 100)) %")
+                        Spacer()
+                        Text("VOLUME +\(Int(max(detector.fallbackLevel, 0))) dB")
+                    }
+                    .font(.mono(11, .bold))
+                    .foregroundStyle(detector.fallbackSimilarity >= detector.fallbackThreshold ? theme.secondary : theme.dim)
+
+                    Text("Écran verrouillé, Taffe compte avec l'empreinte de ta vape. Plus tu vapes app ouverte, plus elle est précise.")
+                        .font(.mono(10))
+                        .foregroundStyle(theme.dim)
+                } else {
+                    Text("Garde l'app ouverte pendant quelques taffes (5 à 10) : elle apprend le son de ta vape pour pouvoir compter écran verrouillé.")
+                        .font(.mono(10))
+                        .foregroundStyle(theme.dim)
                 }
             }
         }

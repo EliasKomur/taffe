@@ -7,6 +7,8 @@ struct SystemView: View {
     @State private var showClearConfirm = false
     @State private var exportURL: URL?
     @State private var showExport = false
+    @State private var shareItems: [URL] = []
+    @State private var showClipShare = false
 
     var body: some View {
         NavigationStack {
@@ -15,6 +17,7 @@ struct SystemView: View {
                     CyberHeader(title: "SYSTÈME_", subtitle: "Configuration")
                     themePanel
                     detectionPanel
+                    backgroundPanel
                     quietPanel
                     limitPanel
                     dataPanel
@@ -37,6 +40,9 @@ struct SystemView: View {
             if let exportURL {
                 ActivityView(items: [exportURL])
             }
+        }
+        .sheet(isPresented: $showClipShare) {
+            ActivityView(items: shareItems)
         }
     }
 
@@ -90,6 +96,48 @@ struct SystemView: View {
         case 0: return "AUCUN"
         case 1: return detector.triggerLabels.first ?? ""
         default: return "\(detector.triggerLabels.count) SONS"
+        }
+    }
+
+    // MARK: - Écran verrouillé
+
+    private var backgroundPanel: some View {
+        CyberPanel("Écran verrouillé", accent: theme.secondary) {
+            VStack(alignment: .leading, spacing: 16) {
+                InfoLine(key: "APPRENTISSAGE",
+                         value: detector.fallbackReady
+                            ? "PRÊT (\(detector.fallbackLearned) blocs)"
+                            : "\(detector.fallbackLearned)/\(FallbackDetector.requiredFrames)")
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("RESSEMBLANCE MINI : \(Int(detector.fallbackThreshold * 100)) %")
+                        .font(.mono(12, .bold))
+                        .foregroundStyle(theme.text)
+                    Slider(value: $detector.fallbackThreshold, in: 0.6...0.98, step: 0.01)
+                        .tint(theme.secondary)
+                    Text("Plus haut = moins de fausses taffes, mais risque d'en rater.")
+                        .font(.mono(10))
+                        .foregroundStyle(theme.dim)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("VOLUME MINI : +\(Int(detector.fallbackMargin)) dB")
+                        .font(.mono(12, .bold))
+                        .foregroundStyle(theme.text)
+                    Slider(value: $detector.fallbackMargin, in: 3...20, step: 1)
+                        .tint(theme.secondary)
+                    Text("Au-dessus du bruit ambiant. Plus haut = ignore les sons faibles.")
+                        .font(.mono(10))
+                        .foregroundStyle(theme.dim)
+                }
+
+                Button {
+                    detector.resetFallbackLearning()
+                } label: {
+                    Label("REFAIRE L'APPRENTISSAGE", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(CyberButtonStyle(color: theme.alert))
+            }
         }
     }
 
@@ -166,6 +214,22 @@ struct SystemView: View {
                     Label("JOURNAL SYSTÈME", systemImage: "terminal")
                 }
                 .buttonStyle(CyberButtonStyle(color: theme.primary))
+
+                InfoLine(key: "ÉCHANTILLONS AUDIO",
+                         value: "\(detector.clipTaffes) taffes · \(detector.clipFond) fond")
+                    .padding(.top, 4)
+
+                Button {
+                    let files = detector.clipFiles()
+                    if !files.isEmpty {
+                        shareItems = files
+                        showClipShare = true
+                    }
+                } label: {
+                    Label("EXPORTER LES ÉCHANTILLONS", systemImage: "waveform.badge.plus")
+                }
+                .buttonStyle(CyberButtonStyle(color: theme.secondary))
+                .disabled(detector.clipTaffes + detector.clipFond == 0)
 
                 Button {
                     showClearConfirm = true
