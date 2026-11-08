@@ -8,6 +8,7 @@ struct ContentView: View {
         NavigationStack {
             List {
                 counterSection
+                scoreSection
                 liveSection
                 settingsSection
                 historySection
@@ -81,6 +82,51 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Score taffe
+
+    private var scoreSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Score taffe")
+                        .font(.headline)
+                    Spacer()
+                    Text("\(Int(detector.currentScore * 100)) %")
+                        .font(.headline)
+                        .monospacedDigit()
+                        .foregroundStyle(detector.isAboveThreshold ? .green : .primary)
+                }
+
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.2))
+                        Capsule()
+                            .fill(detector.isAboveThreshold ? Color.green : Color.blue)
+                            .frame(width: geo.size.width * detector.currentScore)
+                            .animation(.easeOut(duration: 0.15), value: detector.currentScore)
+                        Rectangle()
+                            .fill(Color.orange)
+                            .frame(width: 3)
+                            .offset(x: geo.size.width * detector.threshold - 1.5)
+                    }
+                }
+                .frame(height: 14)
+
+                Text("Trait orange = seuil (\(Int(detector.threshold * 100)) %)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+        } footer: {
+            if detector.triggerLabels.isEmpty {
+                Text("Coche au moins un son ci-dessous pour activer le comptage.")
+            } else {
+                Text("Regarde le score au repos, puis pendant une taffe, et place le seuil entre les deux.")
+            }
+        }
+    }
+
     // MARK: - En direct
 
     private var liveSection: some View {
@@ -94,11 +140,11 @@ struct ContentView: View {
             } else {
                 ForEach(detector.topLabels) { label in
                     Button {
-                        detector.triggerLabel = label.id
+                        detector.toggleTrigger(label.id)
                     } label: {
                         HStack {
-                            Image(systemName: label.id == detector.triggerLabel ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(label.id == detector.triggerLabel ? .green : .secondary)
+                            Image(systemName: detector.isTrigger(label.id) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(detector.isTrigger(label.id) ? .green : .secondary)
                             Text(label.id)
                                 .foregroundStyle(.primary)
                             Spacer()
@@ -115,7 +161,7 @@ struct ContentView: View {
         } header: {
             Text("En direct")
         } footer: {
-            Text("Tire une taffe et regarde quelle étiquette monte. Touche-la pour en faire le déclencheur.")
+            Text("Touche un son pour le cocher ou le décocher. Tous les sons cochés s'additionnent dans le score taffe.")
         }
     }
 
@@ -126,18 +172,25 @@ struct ContentView: View {
             NavigationLink {
                 LabelPickerView()
             } label: {
-                LabeledContent("Déclencheur",
-                               value: detector.triggerLabel.isEmpty ? "Aucun" : detector.triggerLabel)
+                LabeledContent("Déclencheurs", value: triggerSummary)
             }
 
             VStack(alignment: .leading) {
-                Text("Seuil de confiance : \(Int(detector.threshold * 100)) %")
-                Slider(value: $detector.threshold, in: 0.2...0.95, step: 0.05)
+                Text("Seuil : \(Int(detector.threshold * 100)) %")
+                Slider(value: $detector.threshold, in: 0.05...0.95, step: 0.01)
             }
 
             Stepper(value: $detector.cooldown, in: 1...10, step: 1) {
                 Text("Pause entre 2 taffes : \(Int(detector.cooldown)) s")
             }
+        }
+    }
+
+    private var triggerSummary: String {
+        switch detector.triggerLabels.count {
+        case 0: return "Aucun"
+        case 1: return detector.triggerLabels.first ?? ""
+        default: return "\(detector.triggerLabels.count) sons"
         }
     }
 
@@ -169,8 +222,11 @@ struct ContentView: View {
 
 struct LabelPickerView: View {
     @EnvironmentObject private var detector: SoundDetector
-    @Environment(\.dismiss) private var dismiss
     @State private var search = ""
+
+    private var selected: [String] {
+        detector.knownLabels.filter { detector.isTrigger($0) }
+    }
 
     private var filtered: [String] {
         search.isEmpty
@@ -179,24 +235,39 @@ struct LabelPickerView: View {
     }
 
     var body: some View {
-        List(filtered, id: \.self) { label in
-            Button {
-                detector.triggerLabel = label
-                dismiss()
-            } label: {
-                HStack {
-                    Text(label)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    if label == detector.triggerLabel {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(.green)
+        List {
+            if !selected.isEmpty && search.isEmpty {
+                Section("Cochés") {
+                    ForEach(selected, id: \.self) { label in
+                        row(label)
                     }
                 }
             }
+
+            Section(search.isEmpty ? "Tous les sons" : "Résultats") {
+                ForEach(filtered, id: \.self) { label in
+                    row(label)
+                }
+            }
         }
-        .searchable(text: $search, prompt: "breathing, hiss…")
-        .navigationTitle("Déclencheur")
+        .searchable(text: $search, prompt: "snoring, breathing…")
+        .navigationTitle("Déclencheurs")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func row(_ label: String) -> some View {
+        Button {
+            detector.toggleTrigger(label)
+        } label: {
+            HStack {
+                Text(label)
+                    .foregroundStyle(.primary)
+                Spacer()
+                if detector.isTrigger(label) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+        }
     }
 }

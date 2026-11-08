@@ -26,10 +26,12 @@ final class SoundDetector: NSObject, ObservableObject {
     @Published private(set) var topLabels: [LabelScore] = []
     @Published private(set) var puffs: [Date] = []
     @Published private(set) var lastDetection: Date?
+    @Published private(set) var currentScore: Double = 0
     @Published var errorMessage: String?
 
-    @Published var triggerLabel: String {
-        didSet { UserDefaults.standard.set(triggerLabel, forKey: Keys.trigger) }
+    /// Sons qui comptent comme une taffe. Leurs scores sont additionnés.
+    @Published private(set) var triggerLabels: Set<String> {
+        didSet { UserDefaults.standard.set(Array(triggerLabels), forKey: Keys.triggers) }
     }
 
     @Published var threshold: Double {
@@ -46,6 +48,10 @@ final class SoundDetector: NSObject, ObservableObject {
         puffs.filter { Calendar.current.isDateInToday($0) }.count
     }
 
+    var isAboveThreshold: Bool {
+        !triggerLabels.isEmpty && currentScore >= threshold
+    }
+
     // MARK: - Audio
 
     private let engine = AVAudioEngine()
@@ -55,7 +61,8 @@ final class SoundDetector: NSObject, ObservableObject {
     private var shouldBeListening = false
 
     private enum Keys {
-        static let trigger = "triggerLabel"
+        static let triggers = "triggerLabels"
+        static let legacyTrigger = "triggerLabel"
         static let threshold = "threshold"
         static let cooldown = "cooldown"
         static let puffs = "puffs"
@@ -66,10 +73,14 @@ final class SoundDetector: NSObject, ObservableObject {
     override init() {
         let defaults = UserDefaults.standard
 
-        _triggerLabel = Published(initialValue: defaults.string(forKey: Keys.trigger) ?? "")
+        var triggers = Set(defaults.stringArray(forKey: Keys.triggers) ?? [])
+        if triggers.isEmpty, let legacy = defaults.string(forKey: Keys.legacyTrigger), !legacy.isEmpty {
+            triggers.insert(legacy)
+        }
+        _triggerLabels = Published(initialValue: triggers)
 
         let savedThreshold = defaults.double(forKey: Keys.threshold)
-        _threshold = Published(initialValue: savedThreshold > 0 ? savedThreshold : 0.6)
+        _threshold = Published(initialValue: savedThreshold > 0 ? savedThreshold : 0.4)
 
         let savedCooldown = defaults.double(forKey: Keys.cooldown)
         _cooldown = Published(initialValue: savedCooldown > 0 ? savedCooldown : 3)
@@ -95,6 +106,20 @@ final class SoundDetector: NSObject, ObservableObject {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: - Déclencheurs
+
+    func toggleTrigger(_ label: String) {
+        if triggerLabels.contains(label) {
+            triggerLabels.remove(label)
+        } else {
+            triggerLabels.insert(label)
+        }
+    }
+
+    func isTrigger(_ label: String) -> Bool {
+        triggerLabels.contains(label)
     }
 
     // MARK: - Écoute
@@ -169,6 +194,7 @@ final class SoundDetector: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         isListening = false
         topLabels = []
+        currentScore = 0
     }
 
     private func restartIfNeeded() {
@@ -256,7 +282,7 @@ extension SoundDetector: SNResultsObserving {
     func request(_ request: SNRequest, didProduce result: SNResult) {
         guard let result = result as? SNClassificationResult else { return }
 
-        let top = result.classifications.prefix(5).map {
+        let top = result.classifications.prefix(8).map {
             LabelScore(id: $0.identifier, confidence: $0.confidence)
         }
 
@@ -264,9 +290,13 @@ extension SoundDetector: SNResultsObserving {
             guard let self else { return }
             self.topLabels = top
 
-            guard !self.triggerLabel.isEmpty else { return }
-            let confidence = result.classification(forIdentifier: self.triggerLabel)?.confidence ?? 0
-            if confidence >= self.threshold {
+            // Score taffe = somme des scores de tous les déclencheurs cochés.
+            let score = self.triggerLabels.reduce(0.0) { total, label in
+                total + (result.classification(forIdentifier: label)?.confidence ?? 0)
+            }
+            self.currentScore = min(score, 1)
+
+            if self.isAboveThreshold {
                 self.registerDetection()
             }
         }
